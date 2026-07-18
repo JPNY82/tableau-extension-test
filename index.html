@@ -1,45 +1,164 @@
 <!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Santam Insights (connection test)</title>
+<html><head><meta charset="utf-8">
+<title>Santam Broker Insights</title>
 <script src="./tableau.extensions.1.latest.js"></script>
 <style>
-  body{font-family:"Segoe UI",Arial,sans-serif;margin:0;padding:14px;color:#222}
-  h1{font-size:16px;margin:0 0 10px;color:#1f4e79}
-  .ok{color:#1e7b34;font-weight:600}
-  .err{color:#b00020;font-weight:600}
-  #box{font-size:13px;line-height:1.6}
-  ul{margin:6px 0 0 18px;padding:0}
-  li{font-size:13px}
-</style>
-</head>
-<body>
-  <h1>Santam Insights &mdash; connection test</h1>
-  <div id="box">Initialising&hellip;</div>
-
+ body{font-family:Arial,Helvetica,sans-serif;color:#1b2a41;margin:0;padding:14px 18px;background:#fff;font-size:12px}
+ .hdr{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid #1b2a41;padding-bottom:6px;margin-bottom:12px}
+ .hdr h1{font-size:14px;margin:0;letter-spacing:.4px;color:#4a5568;font-weight:700}
+ .hdr .per{font-size:11px;color:#7b8794}
+ .kpis{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+ .kpi{flex:1;min-width:110px;border-top:3px solid #ffc72c;background:#f7f9fc;padding:7px 9px}
+ .kpi .v{font-size:16px;font-weight:700}.kpi .l{font-size:8.5px;letter-spacing:.5px;color:#7b8794;text-transform:uppercase}
+ .sec{display:flex;align-items:center;gap:8px;margin:14px 0 5px}
+ .sec .ltr{color:#ffc72c;font-weight:700;font-size:13px}
+ .sec h2{font-size:12.5px;margin:0;font-weight:600;letter-spacing:.3px}
+ .sec .badge{margin-left:auto;background:#ffc72c;color:#1b2a41;font-size:8px;font-weight:700;padding:3px 10px;border-radius:3px;letter-spacing:.7px}
+ .panel{background:#f7f9fc;padding:10px 12px;margin-bottom:5px}
+ .blk{margin-bottom:9px}.blk .t{font-size:9.5px;font-weight:700;margin-bottom:2px;letter-spacing:.2px}
+ .blk p{margin:2px 0;line-height:1.45;color:#33415c}
+ .err{color:#b00020}.muted{color:#8a94a6}
+ .foot{margin-top:12px;border-top:1px solid #d8dee9;padding-top:6px;font-size:8.5px;color:#8a94a6}
+</style></head>
+<body><div id="app">Loading…</div>
 <script>
-(function () {
-  var box = document.getElementById('box');
+/* ---------- formatting (SA convention) ---------- */
+function sa(x,dp){dp=dp==null?1:dp;if(x==null||isNaN(x))return"0";
+  return x.toFixed(dp).replace(/\B(?=(\d{3})+(?!\d))/g," ").replace(".",",");}
+function rands(v,dp){if(v==null||isNaN(v))return"R0";var a=Math.abs(v);
+  if(a>=1e6)return"R"+sa(v/1e6,dp==null?1:dp)+"M";
+  if(a>=1e3)return"R"+sa(v/1e3,0)+"k";return"R"+sa(v,0);}
+function pc(n,d,dp){return d?sa(100*n/d,dp==null?1:dp)+"%":"n/a";}
 
-  if (!window.tableau || !window.tableau.extensions) {
-    box.innerHTML = '<span class="err">Tableau Extensions API did not load.</span><br>' +
-                    'Check that <b>tableau.extensions.1.latest.js</b> is in the same folder as this page.';
-    return;
-  }
+/* ---------- worksheet reading ---------- */
+function num(x){if(x==null)return 0;var v=(x.value!=null&&x.value!=="%null%")?x.value:x.formattedValue;
+  if(typeof v==="number")return v;
+  v=String(v).replace(/[^\d,.\-]/g,"").replace(/ /g,"").replace(/ /g,"");
+  if(v.indexOf(",")>-1&&v.indexOf(".")>-1)v=v.replace(/,/g,""); else v=v.replace(",",".");
+  var n=parseFloat(v);return isNaN(n)?0:n;}
+function txt(x){return x==null?"":String(x.formattedValue!=null?x.formattedValue:x.value);}
+function col(cols){var needles=[].slice.call(arguments,1);
+  for(var i=0;i<cols.length;i++){var f=cols[i].fieldName.toLowerCase();
+    if(needles.every(function(n){return f.indexOf(n)>-1;}))return i;} return -1;}
+function readSheet(dash,name){
+  var ws=dash.worksheets.filter(function(w){return w.name.toLowerCase()===name.toLowerCase();})[0];
+  if(!ws)return Promise.resolve(null);
+  return ws.getSummaryDataAsync({maxRows:5000,ignoreSelection:true}).then(function(dt){
+    return {cols:dt.columns,rows:dt.data};});}
 
-  tableau.extensions.initializeAsync().then(function () {
-    var dash = tableau.extensions.dashboardContent.dashboard;
-    var items = dash.worksheets.map(function (w) { return '<li>' + w.name + '</li>'; }).join('');
-    box.innerHTML =
-      '<span class="ok">Extension connected ✓</span><br>' +
-      'Dashboard: <b>' + dash.name + '</b><br>' +
-      'Worksheets it can read:' +
-      '<ul>' + (items || '<li>(none found)</li>') + '</ul>';
-  }).catch(function (e) {
-    box.innerHTML = '<span class="err">Failed to initialise:</span> ' + e;
-  });
-})();
-</script>
-</body>
-</html>
+/* ---------- narrative rules (ported from brokerlens_insights.py) ---------- */
+var FLAT=3,DOMINANT=30,SPREAD=40,BIGCLAIM=25,FEW=60,SMALLBASE=2,MATURITY=25;
+function trend(series,noun,fmt){
+  var pts=series.filter(function(p){return p.label;});
+  if(pts.length<2)return "Only one period available - no trend yet.";
+  var ytd=pts[pts.length-1].label.toUpperCase().indexOf("YTD")>-1, judge=ytd&&pts.length>2?pts.slice(0,-1):pts;
+  var v=judge.map(function(p){return p.value;}),l=judge.map(function(p){return p.label;});
+  var d=[];for(var i=0;i<v.length-1;i++)d.push(v[i]?100*(v[i+1]-v[i])/v[i]:0);
+  var s=d.map(function(x){return Math.abs(x)<FLAT?0:(x>0?1:-1);});
+  var overall=v[0]?100*(v[v.length-1]-v[0])/v[0]:0;
+  var peak=v.indexOf(Math.max.apply(null,v)),trough=v.indexOf(Math.min.apply(null,v));
+  var mag=(overall>=0?"+":"")+sa(overall,0)+"% overall ("+l[0]+" to "+l[l.length-1]+")",shape;
+  if(s.every(function(x){return x===0;}))shape=noun+" held broadly flat - "+mag+".";
+  else if(s.every(function(x){return x>=0;}))shape=noun+" grew in every period - "+mag+".";
+  else if(s.every(function(x){return x<=0;}))shape=noun+" declined in every period - "+mag+".";
+  else if(s[s.length-1]<0&&s.slice(0,-1).every(function(x){return x>=0;}))
+    shape=noun+" rose to a peak in "+l[peak]+" ("+fmt(v[peak])+") then fell back - "+mag+".";
+  else if(s[0]<0&&s.slice(1).every(function(x){return x>=0;}))
+    shape=noun+" dipped to a low in "+l[trough]+" and recovered since - "+mag+".";
+  else if(peak>0&&peak<v.length-1)shape=noun+" peaked in "+l[peak]+" and has eased since - "+mag+".";
+  else if(trough>0&&trough<v.length-1)shape=noun+" bottomed in "+l[trough]+" before turning up - "+mag+".";
+  else shape=noun+" moved unevenly period to period - "+mag+".";
+  var detail=pts.map(function(p){return p.label+": "+fmt(p.value);}).join("; ");
+  var note=ytd&&pts.length>2?" "+pts[pts.length-1].label+" is part-year and not comparable to the completed years.":"";
+  return shape+" By period - "+detail+"."+note;}
+function concentration(top,total){
+  if(!top.length||!total)return "";
+  var s1=100*top[0].gwp/total,t10=top.slice(0,10).reduce(function(a,r){return a+r.gwp;},0),s10=100*t10/total;
+  if(s1>=DOMINANT)return "The book is dominated by a single account - "+top[0].name+" is "+sa(s1,0)+"% of GWP ("+rands(top[0].gwp)+"); the top 10 are "+sa(s10,0)+"%. Retaining that one relationship matters disproportionately.";
+  if(s10<=SPREAD)return "Premium is well spread - no single account dominates ("+top[0].name+", the largest, is only "+sa(s1,0)+"%) and the top 10 are "+sa(s10,0)+"% of GWP.";
+  return "Premium is moderately concentrated - "+top[0].name+" is the largest at "+sa(s1,0)+"% and the top 10 account for "+sa(s10,0)+"% of GWP.";}
+function lossDriver(top,totalInc){
+  if(!top.length||!totalInc)return "No material claims incurred in the period.";
+  var byInc=top.slice().sort(function(a,b){return b.inc-a.inc;});
+  var b1=100*byInc[0].inc/totalInc,t5=byInc.slice(0,5).reduce(function(a,r){return a+r.inc;},0),s5=100*t5/totalInc;
+  if(b1>=BIGCLAIM)return "Loss is concentrated in one account, not broad attrition - "+byInc[0].name+" at "+rands(byInc[0].inc)+" is "+sa(b1,0)+"% of all incurred; the top 5 are "+sa(s5,0)+"%.";
+  if(s5>=FEW)return "Losses sit in a handful of accounts rather than broad attrition - the top 5 are "+sa(s5,0)+"% of incurred, led by "+byInc[0].name+" ("+rands(byInc[0].inc)+").";
+  return "Losses look broad and attritional rather than event-driven - the largest single account is only "+sa(b1,0)+"% of incurred and the top 5 are "+sa(s5,0)+"%.";}
+function maturity(open,total){if(!total)return "";var s=100*open/total;
+  if(s<MATURITY)return "";
+  return "Claims are still developing - "+sa(s,0)+"% ("+sa(open,0)+" of "+sa(total,0)+") remain open, so recent periods are reserve-based and provisional.";}
+function buPhrases(bus,totalGwp){
+  return bus.filter(function(r){return r.gwp>0;}).sort(function(a,b){return b.inc/b.gwp-a.inc/a.gwp;}).slice(0,6)
+   .map(function(r){var lr=100*r.inc/r.gwp,sh=totalGwp?100*r.gwp/totalGwp:0;
+     if(sh<SMALLBASE&&lr>50)return r.name+" shows "+sa(lr)+"% but on a very small base ("+rands(r.gwp)+", "+sa(sh)+"% of GWP) - distorted, not a real concern.";
+     if(lr>100)return r.name+" is loss-making at "+sa(lr)+"% on "+rands(r.gwp)+".";
+     return r.name+" "+sa(lr)+"% on "+rands(r.gwp)+".";});}
+
+/* ---------- render ---------- */
+function esc(s){return String(s).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
+function section(l,t,blocks){var h='<div class="sec"><span class="ltr">'+l+'</span><h2>'+t+'</h2><span class="badge">INSIGHTS</span></div><div class="panel">';
+  blocks.forEach(function(b){h+='<div class="blk"><div class="t">'+esc(b[0])+'</div>';
+    b[1].filter(function(x){return x&&x.trim();}).forEach(function(x){h+="<p>"+esc(x)+"</p>";});h+="</div>";});
+  return h+"</div>";}
+
+function build(byYear,byBU,accounts,claims){
+  var gwp=byYear.reduce(function(a,r){return a+r.gwp;},0),inc=byYear.reduce(function(a,r){return a+r.inc;},0);
+  var pol=byYear.reduce(function(a,r){return a+r.pol;},0),lr=gwp?100*inc/gwp:0;
+  var openC=claims.filter(function(c){return !/FINAL|CLOSED|SETTLED|WITHDRAWN|REPUDIAT/i.test(c.name);})
+                  .reduce(function(a,c){return a+c.n;},0);
+  var allC=claims.reduce(function(a,c){return a+c.n;},0);
+  var kpi=[["GROSS WRITTEN PREMIUM",rands(gwp)],["LOSS RATIO",sa(lr)+"%"],["POLICIES",sa(pol,0)],
+           ["ACCOUNTS",sa(accounts.length,0)+"+"],["GROSS INCURRED",rands(inc)]];
+  var h='<div class="hdr"><h1>BROKER PORTFOLIO &mdash; INSIGHTS</h1><div class="per">'+
+        esc(byYear.map(function(r){return r.label;}).join(" &middot; "))+'</div></div><div class="kpis">';
+  kpi.forEach(function(k){h+='<div class="kpi"><div class="v">'+k[1]+'</div><div class="l">'+k[0]+'</div></div>';});
+  h+="</div>";
+  h+=section("A","GROSS WRITTEN PREMIUM INSIGHTS",[
+    ["HOW IS GWP TRENDING?",[trend(byYear.map(function(r){return {label:r.label,value:r.gwp};}),"GWP",function(v){return rands(v);}),
+      "Total "+rands(gwp)+" across "+sa(pol,0)+" policies."]],
+    ["CONCENTRATION",[concentration(accounts,gwp),
+      "By business unit: "+byBU.slice().sort(function(a,b){return b.gwp-a.gwp;}).slice(0,5)
+        .map(function(r){return r.name+" "+rands(r.gwp)+" ("+pc(r.gwp,gwp,0)+")";}).join(", ")+"."]]]);
+  h+=section("B","LOSS RATIO INSIGHTS",[
+    ["WHAT IS DRIVING LOSS RATIOS?",[
+      "Loss ratio "+sa(lr)+"% overall - "+rands(inc)+" incurred on "+rands(gwp)+" GWP.",
+      trend(byYear.map(function(r){return {label:r.label,value:r.gwp?100*r.inc/r.gwp:0};}),"The loss ratio",function(v){return sa(v)+"%";}),
+      lossDriver(accounts,inc), maturity(openC,allC)]],
+    ["LOSS RATIOS BY BUSINESS UNIT",buPhrases(byBU,gwp)]]);
+  h+='<div class="foot">Generated live from the current dashboard filters. GWP in ZAR. Loss ratio = gross claims incurred / GWP (excludes IBNR, fees, forex). Claim status is a point-in-time snapshot.</div>';
+  return h;}
+
+/* ---------- wiring ---------- */
+function refresh(){
+  var dash=tableau.extensions.dashboardContent.dashboard;
+  return Promise.all([readSheet(dash,"INS_ByYear"),readSheet(dash,"INS_ByUMA"),
+                      readSheet(dash,"INS_TopAccounts"),readSheet(dash,"INS_Claims")])
+  .then(function(r){
+    var missing=["INS_ByYear","INS_ByUMA","INS_TopAccounts","INS_Claims"].filter(function(n,i){return !r[i];});
+    if(missing.length){document.getElementById("app").innerHTML=
+      '<p class="err">Missing worksheet(s) on this dashboard: '+missing.join(", ")+
+      '</p><p class="muted">Add them to the dashboard (they can sit off-canvas) and refresh.</p>';return;}
+    var y=r[0],u=r[1],a=r[2],c=r[3];
+    var iy=col(y.cols,"year"),yg=col(y.cols,"gwp"),yi=col(y.cols,"incur"),yp=col(y.cols,"policy");
+    var byYear=y.rows.map(function(row){return {label:txt(row[iy]),gwp:num(row[yg]),inc:num(row[yi]),pol:yp>-1?num(row[yp]):0};})
+      .filter(function(r){return r.label;}).sort(function(m,n){return m.label<n.label?-1:1;});
+    var ub=col(u.cols,"business")>-1?col(u.cols,"business"):0,ug=col(u.cols,"gwp"),ui=col(u.cols,"incur");
+    var byBU=u.rows.map(function(row){return {name:txt(row[ub]),gwp:num(row[ug]),inc:num(row[ui])};}).filter(function(r){return r.name;});
+    var ac=col(a.cols,"company")>-1?col(a.cols,"company"):0,ag=col(a.cols,"gwp"),ai=col(a.cols,"incur");
+    var accounts=a.rows.map(function(row){return {name:txt(row[ac]),gwp:num(row[ag]),inc:ai>-1?num(row[ai]):0};})
+      .filter(function(r){return r.name;}).sort(function(m,n){return n.gwp-m.gwp;});
+    var cs=col(c.cols,"status")>-1?col(c.cols,"status"):0,cn=col(c.cols,"claimid")>-1?col(c.cols,"claimid"):1;
+    var claims=c.rows.map(function(row){return {name:txt(row[cs]),n:num(row[cn])};}).filter(function(r){return r.name;});
+    document.getElementById("app").innerHTML=build(byYear,byBU,accounts,claims);
+  }).catch(function(e){document.getElementById("app").innerHTML='<p class="err">Error: '+esc(e.message||e)+'</p>';});}
+
+tableau.extensions.initializeAsync().then(function(){
+  refresh();
+  tableau.extensions.dashboardContent.dashboard.worksheets.forEach(function(ws){
+    ws.addEventListener(tableau.TableauEventType.FilterChanged,refresh);
+    ws.addEventListener(tableau.TableauEventType.MarkSelectionChanged,refresh);});
+  var ps=tableau.extensions.dashboardContent.dashboard.getParametersAsync;
+  if(ps)tableau.extensions.dashboardContent.dashboard.getParametersAsync().then(function(list){
+    list.forEach(function(p){p.addEventListener(tableau.TableauEventType.ParameterChanged,refresh);});});
+}).catch(function(e){document.getElementById("app").innerHTML='<p class="err">Failed to initialise: '+e+'</p>';});
+</script></body></html>
