@@ -21,7 +21,7 @@
  .foot{margin-top:12px;border-top:1px solid #d8dee9;padding-top:6px;font-size:8.5px;color:#8a94a6}
 </style></head>
 <body><div id="app">Loading…</div>
-<div class="foot" id="buildstamp">BUILD v4 &middot; Santam Broker Insights</div>
+<div class="foot" id="buildstamp">BUILD v5 &middot; Santam Broker Insights</div>
 <script>
 /* ---------- formatting (SA convention) ---------- */
 function sa(x,dp){dp=dp==null?1:dp;if(x==null||isNaN(x))return"0";
@@ -70,6 +70,43 @@ function readSheet(dash,name){
   if(!ws)return Promise.resolve(null);
   return ws.getSummaryDataAsync({maxRows:10000,ignoreSelection:true}).then(function(dt){
     return {cols:dt.columns,rows:dt.data};});}
+
+/* ---------- fallback: raw DW code -> business unit name ---------- */
+var BU_MAP={"ert_africa":"Corporate Property","ert":"Corporate Property","sha":"CAHM",
+ "amua":"Marine","mirabilis":"Construction & Engineering","vum":"Emerging Business",
+ "cbg":"Guarantees","csure":"Specialist Real Estate","aviation":"Aviation"};
+function buName(n){var k=(n||"").trim().toLowerCase();return BU_MAP[k]||n;}
+
+/* ---------- multi-dimension reader for the movement sheets ---------- */
+function records(sheet){
+  if(!sheet)return [];
+  var cols=sheet.cols,rows=sheet.rows;
+  var mn=idxOf(cols,"measure names"),mv=idxOf(cols,"measure values");
+  if(mn>-1&&mv>-1){
+    var dimIdx=[];for(var i=0;i<cols.length;i++)if(i!==mn&&i!==mv)dimIdx.push(i);
+    var map={},order=[];
+    rows.forEach(function(r){
+      var key=dimIdx.map(function(i){return txt(r[i]);}).join("||");
+      if(!map[key]){var d={};dimIdx.forEach(function(i){d[cols[i].fieldName.toLowerCase()]=txt(r[i]);});map[key]={dim:d,vals:{}};order.push(key);}
+      map[key].vals[txt(r[mn]).toLowerCase()]=num(r[mv]);});
+    return order.map(function(k){return map[k];});
+  }
+  return rows.map(function(r){var d={},vals={};
+    cols.forEach(function(c,i){var f=c.fieldName.toLowerCase();
+      if(/gwp|incur|claim|count|distinct/.test(f))vals[f]=num(r[i]);else d[f]=txt(r[i]);});
+    return {dim:d,vals:vals};});
+}
+function agg(recs){var n=0,g=0;recs.forEach(function(r){n+=pick(r.vals,"policy")||0;g+=pick(r.vals,"gwp")||0;});
+  if(n===0)n=recs.length;return {n:n,g:g,recs:recs.length};}
+function groupBy(recs,dimKey){var m={};recs.forEach(function(r){var k=r.dim[dimKey]||"(none)";
+  if(!m[k])m[k]={name:k,n:0,g:0};m[k].n+=pick(r.vals,"policy")||1;m[k].g+=pick(r.vals,"gwp")||0;});
+  return Object.keys(m).map(function(k){return m[k];}).sort(function(a,b){return b.n-a.n;});}
+function groupByYear(recs,dimKey){var m={};recs.forEach(function(r){
+  var y=((r.dim[dimKey]||"").match(/(19|20)\d\d/)||["?"])[0];
+  if(!m[y])m[y]={name:y,n:0,g:0};m[y].n+=pick(r.vals,"policy")||1;m[y].g+=pick(r.vals,"gwp")||0;});
+  return Object.keys(m).sort().map(function(k){return m[k];});}
+function mvBlock(sheet,dimKey,byYear){var recs=records(sheet);var a=agg(recs);
+  a.present=!!sheet;a.by=byYear?groupByYear(recs,dimKey):groupBy(recs,dimKey);return a;}
 
 /* ---------- narrative rules (ported from brokerlens_insights.py) ---------- */
 var FLAT=3,DOMINANT=30,SPREAD=40,BIGCLAIM=25,FEW=60,SMALLBASE=2,MATURITY=25;
@@ -126,13 +163,39 @@ function section(l,t,blocks){var h='<div class="sec"><span class="ltr">'+l+'</sp
     b[1].filter(function(x){return x&&x.trim();}).forEach(function(x){h+="<p>"+esc(x)+"</p>";});h+="</div>";});
   return h+"</div>";}
 
-function build(byYear,byBU,accounts,claims,diag){
+function buildC(mv){
+  var c=mv.cancel,l=mv.lapse,mo=mv.moved,nw=mv.incept;
+  if(!(c.present||l.present||mo.present||nw.present))return "";
+  var blocks=[];
+  if(c.present)blocks.push(["CANCELLATIONS",[
+    c.n+" policies cancelled in the period, carrying "+rands(c.g)+" of premium (premium earned over the window, not a clean forward loss).",
+    c.by.length?"By business unit: "+c.by.slice(0,6).map(function(r){return buName(r.name)+" "+r.n;}).join(", ")+".":""]]);
+  if(l.present)blocks.push(["LAPSES (NON-RENEWALS)",[
+    l.n+" policies lapsed (not renewed), "+rands(l.g)+" of premium.",
+    l.by.length?"By business unit: "+l.by.slice(0,6).map(function(r){return buName(r.name)+" "+r.n;}).join(", ")+".":""]]);
+  if(mo.present)blocks.push(["MOVED TO ANOTHER BROKER",[
+    mo.n+" policies now sit with another broker. Premium shown is what they raised with this broker ("+rands(mo.g)+"), not the new broker's.",
+    mo.by.length?"Where it went: "+mo.by.slice(0,5).map(function(r){return r.name+" ("+r.n+", "+rands(r.g)+")";}).join(", ")+".":"",
+    "A moved policy may also have cancelled or lapsed, so this overlaps with the figures above and is not additive."]]);
+  if(nw.present){
+    var lostN=(c.present?c.n:0)+(l.present?l.n:0);
+    var lostG=(c.present?c.g:0)+(l.present?l.g:0);
+    var dir=nw.n>=lostN?"the book is adding more policies than it is losing":"the book is losing more policies than it is adding";
+    blocks.push(["NEW BUSINESS (INCEPTED IN PERIOD)",[
+      nw.n+" policies incepted, "+rands(nw.g)+" of new premium.",
+      nw.by.length?"By inception year: "+nw.by.map(function(r){return r.name+": "+r.n+" / "+rands(r.g);}).join(", ")+".":"",
+      "Net on policy count: "+nw.n+" new against "+lostN+" cancelled or lapsed - "+dir+".",
+      "New premium "+rands(nw.g)+" vs "+rands(lostG)+" on cancelled/lapsed policies - indicative only, since cancelled premium reflects what was earned over the window rather than a forward loss."]]);
+  }
+  return section("C","POLICY MOVEMENT INSIGHTS",blocks);
+}
+function build(byYear,byBU,accounts,claims,mv,diag){
   var gwp=byYear.reduce(function(a,r){return a+r.gwp;},0),inc=byYear.reduce(function(a,r){return a+r.inc;},0);
   var pol=byYear.reduce(function(a,r){return a+r.pol;},0),lr=gwp?100*inc/gwp:0;
   var openC=claims.filter(function(c){return !/FINAL|CLOSED|SETTLED|WITHDRAWN|REPUDIAT/i.test(c.name);})
                   .reduce(function(a,c){return a+c.n;},0);
   var allC=claims.reduce(function(a,c){return a+c.n;},0);
-  var kpi=[["GROSS WRITTEN PREMIUM",rands(gwp)],["LOSS RATIO",sa(lr)+"%"],["POLICIES",sa(pol,0)],
+  var kpi=[["GROSS WRITTEN PREMIUM",rands(gwp)],["LOSS RATIO",sa(lr)+"%"],[(mv&&mv.total&&mv.total.present)?"POLICIES":"POLICY YEARS",sa((mv&&mv.total&&mv.total.present)?mv.total.n:pol,0)],
            ["ACCOUNTS",sa(accounts.length,0)],["GROSS INCURRED",rands(inc)]];
   var h='<div class="hdr"><h1>BROKER PORTFOLIO &mdash; INSIGHTS</h1><div class="per">'+
         esc(byYear.length?(byYear[0].label+' - '+byYear[byYear.length-1].label):'')+'</div></div><div class="kpis">';
@@ -140,7 +203,7 @@ function build(byYear,byBU,accounts,claims,diag){
   h+="</div>";
   h+=section("A","GROSS WRITTEN PREMIUM INSIGHTS",[
     ["HOW IS GWP TRENDING?",[trend(byYear.map(function(r){return {label:r.label,value:r.gwp};}),"GWP",function(v){return rands(v);}),
-      "Total "+rands(gwp)+" across "+sa(pol,0)+" policies."]],
+      "Total "+rands(gwp)+" across "+sa(pol,0)+" policy-years (a policy running over several years counts once per year)."]],
     ["CONCENTRATION",[concentration(accounts,gwp),
       "By business unit: "+byBU.slice().sort(function(a,b){return b.gwp-a.gwp;}).slice(0,5)
         .map(function(r){return r.name+" "+rands(r.gwp)+" ("+pc(r.gwp,gwp,0)+")";}).join(", ")+"."]]]);
@@ -150,14 +213,18 @@ function build(byYear,byBU,accounts,claims,diag){
       trend(byYear.map(function(r){return {label:r.label,value:r.gwp?100*r.inc/r.gwp:0};}),"The loss ratio",function(v){return sa(v)+"%";}),
       lossDriver(accounts,inc), maturity(openC,allC)]],
     ["LOSS RATIOS BY BUSINESS UNIT",buPhrases(byBU,gwp)]]);
-  h+='<div class="foot">BUILD v4 &middot; rows read: ByYear '+(diag?diag.y:'?')+', ByUMA '+(diag?diag.u:'?')+', TopAccounts '+(diag?diag.a:'?')+', Claims '+(diag?diag.c:'?')+'<br>ByYear columns: '+esc(diag?diag.cols:'')+'<br>Generated live from the current dashboard filters. GWP in ZAR. Loss ratio = gross claims incurred / GWP (excludes IBNR, fees, forex). Claim status is a point-in-time snapshot.</div>';
+  h+=buildC(mv);
+  h+='<div class="foot">BUILD v6 &middot; rows read: ByYear '+(diag?diag.y:'?')+', ByUMA '+(diag?diag.u:'?')+', TopAccounts '+(diag?diag.a:'?')+', Claims '+(diag?diag.c:'?')+'<br>ByYear columns: '+esc(diag?diag.cols:'')+'<br>Generated live from the current dashboard filters. GWP in ZAR. Loss ratio = gross claims incurred / GWP (excludes IBNR, fees, forex). Claim status is a point-in-time snapshot.</div>';
   return h;}
 
 /* ---------- wiring ---------- */
 function refresh(){
   var dash=tableau.extensions.dashboardContent.dashboard;
   return Promise.all([readSheet(dash,"INS_ByYear"),readSheet(dash,"INS_ByUMA"),
-                      readSheet(dash,"INS_TopAccounts"),readSheet(dash,"INS_Claims")])
+                      readSheet(dash,"INS_TopAccounts"),readSheet(dash,"INS_Claims"),
+                      readSheet(dash,"INS_Total"),readSheet(dash,"CancelledInPeriod"),
+                      readSheet(dash,"ExpiredInPeriod"),readSheet(dash,"InceptionInPeriod"),
+                      readSheet(dash,"MovedOutPremium")])
   .then(function(r){
     var names=["INS_ByYear","INS_ByUMA","INS_TopAccounts","INS_Claims"];
     var missing=names.filter(function(n,i){return !r[i];});
@@ -170,7 +237,7 @@ function refresh(){
       .filter(function(y){return y.gwp!==0||y.inc!==0||y.pol!==0;})   // drops empty / pre-range years
       .sort(function(a,b){return a.label<b.label?-1:1;});
     var byBU=parse(r[1]).map(function(x){
-        return {name:x.label,gwp:pick(x.vals,"gwp"),inc:pick(x.vals,"incur")};})
+        return {name:buName(x.label),gwp:pick(x.vals,"gwp"),inc:pick(x.vals,"incur")};})
       .filter(function(b){return b.gwp!==0||b.inc!==0;});
     var accounts=parse(r[2]).map(function(x){
         return {name:x.label,gwp:pick(x.vals,"gwp"),inc:pick(x.vals,"incur")};})
@@ -181,7 +248,15 @@ function refresh(){
 
     if(!byYear.length){document.getElementById("app").innerHTML=
       '<p class="err">INS_ByYear returned no usable rows.</p><p class="muted">Check the sheet has a year dimension and the GWP / incurred measures, and that the broker filter is applied to it.</p>';return;}
-    document.getElementById("app").innerHTML=build(byYear,byBU,accounts,claims,{y:(r[0].rows||[]).length,u:(r[1].rows||[]).length,a:(r[2].rows||[]).length,c:(r[3].rows||[]).length,cols:(r[0].cols||[]).map(function(c){return c.fieldName;}).join(' | ')});
+    var total=agg(records(r[4]));total.present=!!r[4];
+    var mv={total:total,
+            cancel:mvBlock(r[5],"business unit",false),
+            lapse:mvBlock(r[6],"business unit",false),
+            incept:mvBlock(r[7],"original inception date",true),
+            moved:mvBlock(r[8],"latest broker on policy",false)};
+    document.getElementById("app").innerHTML=build(byYear,byBU,accounts,claims,mv,
+      {y:(r[0].rows||[]).length,u:(r[1].rows||[]).length,a:(r[2].rows||[]).length,c:(r[3].rows||[]).length,
+       cols:(r[0].cols||[]).map(function(c){return c.fieldName;}).join(' | ')});
   }).catch(function(e){document.getElementById("app").innerHTML='<p class="err">Error: '+esc(e.message||e)+'</p>';});}
 
 tableau.extensions.initializeAsync().then(function(){
@@ -192,5 +267,5 @@ tableau.extensions.initializeAsync().then(function(){
   var ps=tableau.extensions.dashboardContent.dashboard.getParametersAsync;
   if(ps)tableau.extensions.dashboardContent.dashboard.getParametersAsync().then(function(list){
     list.forEach(function(p){p.addEventListener(tableau.TableauEventType.ParameterChanged,refresh);});});
-}).catch(function(e){document.getElementById("app").innerHTML='<p class="err">Failed to initialise: '+e+'</p><p class="muted">(BUILD v4 - this message is normal outside Tableau)</p>';});
+}).catch(function(e){document.getElementById("app").innerHTML='<p class="err">Failed to initialise: '+e+'</p><p class="muted">(BUILD v5 - this message is normal outside Tableau)</p>';});
 </script></body></html>
