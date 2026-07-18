@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Santam Insights (connection test)</title>
+<script src="./tableau.extensions.1.latest.js"></script>
+<style>
+  body{font-family:"Segoe UI",Arial,sans-serif;margin:0;padding:14px;color:#222}
+  h1{font-size:16px;margin:0 0 10px;color:#1f4e79}
+  .ok{color:#1e7b34;font-weight:600}
+  .err{color:#b00020;font-weight:600}
+  #box{font-size:13px;line-height:1.6}
+  ul{margin:6px 0 0 18px;padding:0}
+  li{font-size:13px}
+</style>
+</head>
+<body>
+  <h1>Santam Insights &mdash; connection test</h1>
+  <div id="box">Initialising&hellip;</div>
+
+<script>
+(function () {
+  var box = document.getElementById('box');
+
+  if (!window.tableau || !window.tableau.extensions) {
+    box.innerHTML = '<span class="err">Tableau Extensions API did not load.</span><br>' +
+                    'Check that <b>tableau.extensions.1.latest.js</b> is in the same folder as this page.';
+    return;
+  }
+
+  tableau.extensions.initializeAsync().then(function () {
+    var dash = tableau.extensions.dashboardContent.dashboard;
+    var items = dash.worksheets.map(function (w) { return '<li>' + w.name + '</li>'; }).join('');
+    box.innerHTML =
+      '<span class="ok">Extension connected ✓</span><br>' +
+      'Dashboard: <b>' + dash.name + '</b><br>' +
+      'Worksheets it can read:' +
+      '<ul>' + (items || '<li>(none found)</li>') + '</ul>';
+  }).catch(function (e) {
+    box.innerHTML = '<span class="err">Failed to initialise:</span> ' + e;
+  });
+})();
+</script>
+</body>
+</html>
