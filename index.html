@@ -125,7 +125,7 @@ function section(l,t,blocks){var h='<div class="sec"><span class="ltr">'+l+'</sp
     b[1].filter(function(x){return x&&x.trim();}).forEach(function(x){h+="<p>"+esc(x)+"</p>";});h+="</div>";});
   return h+"</div>";}
 
-function build(byYear,byBU,accounts,claims){
+function build(byYear,byBU,accounts,claims,diag){
   var gwp=byYear.reduce(function(a,r){return a+r.gwp;},0),inc=byYear.reduce(function(a,r){return a+r.inc;},0);
   var pol=byYear.reduce(function(a,r){return a+r.pol;},0),lr=gwp?100*inc/gwp:0;
   var openC=claims.filter(function(c){return !/FINAL|CLOSED|SETTLED|WITHDRAWN|REPUDIAT/i.test(c.name);})
@@ -149,7 +149,7 @@ function build(byYear,byBU,accounts,claims){
       trend(byYear.map(function(r){return {label:r.label,value:r.gwp?100*r.inc/r.gwp:0};}),"The loss ratio",function(v){return sa(v)+"%";}),
       lossDriver(accounts,inc), maturity(openC,allC)]],
     ["LOSS RATIOS BY BUSINESS UNIT",buPhrases(byBU,gwp)]]);
-  h+='<div class="foot">Generated live from the current dashboard filters. GWP in ZAR. Loss ratio = gross claims incurred / GWP (excludes IBNR, fees, forex). Claim status is a point-in-time snapshot.</div>';
+  h+='<div class="foot">BUILD v3 &middot; rows read: ByYear '+(diag?diag.y:'?')+', ByUMA '+(diag?diag.u:'?')+', TopAccounts '+(diag?diag.a:'?')+', Claims '+(diag?diag.c:'?')+'<br>ByYear columns: '+esc(diag?diag.cols:'')+'<br>Generated live from the current dashboard filters. GWP in ZAR. Loss ratio = gross claims incurred / GWP (excludes IBNR, fees, forex). Claim status is a point-in-time snapshot.</div>';
   return h;}
 
 /* ---------- wiring ---------- */
@@ -180,7 +180,7 @@ function refresh(){
 
     if(!byYear.length){document.getElementById("app").innerHTML=
       '<p class="err">INS_ByYear returned no usable rows.</p><p class="muted">Check the sheet has a year dimension and the GWP / incurred measures, and that the broker filter is applied to it.</p>';return;}
-    document.getElementById("app").innerHTML=build(byYear,byBU,accounts,claims);
+    document.getElementById("app").innerHTML=build(byYear,byBU,accounts,claims,{y:(r[0].rows||[]).length,u:(r[1].rows||[]).length,a:(r[2].rows||[]).length,c:(r[3].rows||[]).length,cols:(r[0].cols||[]).map(function(c){return c.fieldName;}).join(' | ')});
   }).catch(function(e){document.getElementById("app").innerHTML='<p class="err">Error: '+esc(e.message||e)+'</p>';});}
 
 tableau.extensions.initializeAsync().then(function(){
