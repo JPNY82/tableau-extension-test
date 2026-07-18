@@ -21,6 +21,7 @@
  .foot{margin-top:12px;border-top:1px solid #d8dee9;padding-top:6px;font-size:8.5px;color:#8a94a6}
 </style></head>
 <body><div id="app">Loading…</div>
+<div class="foot" id="buildstamp">BUILD v4 &middot; Santam Broker Insights</div>
 <script>
 /* ---------- formatting (SA convention) ---------- */
 function sa(x,dp){dp=dp==null?1:dp;if(x==null||isNaN(x))return"0";
@@ -149,7 +150,7 @@ function build(byYear,byBU,accounts,claims,diag){
       trend(byYear.map(function(r){return {label:r.label,value:r.gwp?100*r.inc/r.gwp:0};}),"The loss ratio",function(v){return sa(v)+"%";}),
       lossDriver(accounts,inc), maturity(openC,allC)]],
     ["LOSS RATIOS BY BUSINESS UNIT",buPhrases(byBU,gwp)]]);
-  h+='<div class="foot">BUILD v3 &middot; rows read: ByYear '+(diag?diag.y:'?')+', ByUMA '+(diag?diag.u:'?')+', TopAccounts '+(diag?diag.a:'?')+', Claims '+(diag?diag.c:'?')+'<br>ByYear columns: '+esc(diag?diag.cols:'')+'<br>Generated live from the current dashboard filters. GWP in ZAR. Loss ratio = gross claims incurred / GWP (excludes IBNR, fees, forex). Claim status is a point-in-time snapshot.</div>';
+  h+='<div class="foot">BUILD v4 &middot; rows read: ByYear '+(diag?diag.y:'?')+', ByUMA '+(diag?diag.u:'?')+', TopAccounts '+(diag?diag.a:'?')+', Claims '+(diag?diag.c:'?')+'<br>ByYear columns: '+esc(diag?diag.cols:'')+'<br>Generated live from the current dashboard filters. GWP in ZAR. Loss ratio = gross claims incurred / GWP (excludes IBNR, fees, forex). Claim status is a point-in-time snapshot.</div>';
   return h;}
 
 /* ---------- wiring ---------- */
@@ -191,5 +192,5 @@ tableau.extensions.initializeAsync().then(function(){
   var ps=tableau.extensions.dashboardContent.dashboard.getParametersAsync;
   if(ps)tableau.extensions.dashboardContent.dashboard.getParametersAsync().then(function(list){
     list.forEach(function(p){p.addEventListener(tableau.TableauEventType.ParameterChanged,refresh);});});
-}).catch(function(e){document.getElementById("app").innerHTML='<p class="err">Failed to initialise: '+e+'</p>';});
+}).catch(function(e){document.getElementById("app").innerHTML='<p class="err">Failed to initialise: '+e+'</p><p class="muted">(BUILD v4 - this message is normal outside Tableau)</p>';});
 </script></body></html>
