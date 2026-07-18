@@ -30,20 +30,44 @@ function rands(v,dp){if(v==null||isNaN(v))return"R0";var a=Math.abs(v);
   if(a>=1e3)return"R"+sa(v/1e3,0)+"k";return"R"+sa(v,0);}
 function pc(n,d,dp){return d?sa(100*n/d,dp==null?1:dp)+"%":"n/a";}
 
-/* ---------- worksheet reading ---------- */
+/* ---------- worksheet reading (handles wide AND Measure Names/Values layouts) ---------- */
 function num(x){if(x==null)return 0;var v=(x.value!=null&&x.value!=="%null%")?x.value:x.formattedValue;
-  if(typeof v==="number")return v;
-  v=String(v).replace(/[^\d,.\-]/g,"").replace(/ /g,"").replace(/ /g,"");
+  if(typeof v==="number")return isNaN(v)?0:v;
+  v=String(v).replace(/[^\d,.\-]/g,"").replace(/\s/g,"");
   if(v.indexOf(",")>-1&&v.indexOf(".")>-1)v=v.replace(/,/g,""); else v=v.replace(",",".");
   var n=parseFloat(v);return isNaN(n)?0:n;}
-function txt(x){return x==null?"":String(x.formattedValue!=null?x.formattedValue:x.value);}
-function col(cols){var needles=[].slice.call(arguments,1);
-  for(var i=0;i<cols.length;i++){var f=cols[i].fieldName.toLowerCase();
-    if(needles.every(function(n){return f.indexOf(n)>-1;}))return i;} return -1;}
+function txt(x){if(x==null)return "";var v=x.formattedValue!=null?x.formattedValue:x.value;return String(v==null?"":v);}
+function isNull(t){t=(t||"").trim().toLowerCase();return t===""||t==="null"||t==="%null%";}
+function idxOf(cols,needle){for(var i=0;i<cols.length;i++){if(cols[i].fieldName.toLowerCase().indexOf(needle)>-1)return i;}return -1;}
+
+/* -> [{label, vals:{measureName:number}}] regardless of sheet layout */
+function parse(sheet){
+  if(!sheet)return [];
+  var cols=sheet.cols,rows=sheet.rows;
+  var mn=idxOf(cols,"measure names"),mv=idxOf(cols,"measure values");
+  var out=[];
+  if(mn>-1&&mv>-1){                                  // long format
+    var dim=-1;for(var i=0;i<cols.length;i++){if(i!==mn&&i!==mv){dim=i;break;}}
+    var map={},order=[];
+    rows.forEach(function(r){
+      var lbl=dim>-1?txt(r[dim]):"";
+      if(!map[lbl]){map[lbl]={label:lbl,vals:{}};order.push(lbl);}
+      map[lbl].vals[txt(r[mn]).toLowerCase()]=num(r[mv]);});
+    out=order.map(function(k){return map[k];});
+  }else{                                             // wide format
+    out=rows.map(function(r){
+      var o={label:txt(r[0]),vals:{}};
+      for(var i=1;i<cols.length;i++)o.vals[cols[i].fieldName.toLowerCase()]=num(r[i]);
+      return o;});
+  }
+  return out.filter(function(r){return !isNull(r.label);});
+}
+function pick(vals){var needles=[].slice.call(arguments,1);
+  for(var k in vals){if(needles.every(function(n){return k.indexOf(n)>-1;}))return vals[k];}return 0;}
 function readSheet(dash,name){
   var ws=dash.worksheets.filter(function(w){return w.name.toLowerCase()===name.toLowerCase();})[0];
   if(!ws)return Promise.resolve(null);
-  return ws.getSummaryDataAsync({maxRows:5000,ignoreSelection:true}).then(function(dt){
+  return ws.getSummaryDataAsync({maxRows:10000,ignoreSelection:true}).then(function(dt){
     return {cols:dt.columns,rows:dt.data};});}
 
 /* ---------- narrative rules (ported from brokerlens_insights.py) ---------- */
@@ -108,9 +132,9 @@ function build(byYear,byBU,accounts,claims){
                   .reduce(function(a,c){return a+c.n;},0);
   var allC=claims.reduce(function(a,c){return a+c.n;},0);
   var kpi=[["GROSS WRITTEN PREMIUM",rands(gwp)],["LOSS RATIO",sa(lr)+"%"],["POLICIES",sa(pol,0)],
-           ["ACCOUNTS",sa(accounts.length,0)+"+"],["GROSS INCURRED",rands(inc)]];
+           ["ACCOUNTS",sa(accounts.length,0)],["GROSS INCURRED",rands(inc)]];
   var h='<div class="hdr"><h1>BROKER PORTFOLIO &mdash; INSIGHTS</h1><div class="per">'+
-        esc(byYear.map(function(r){return r.label;}).join(" &middot; "))+'</div></div><div class="kpis">';
+        esc(byYear.length?(byYear[0].label+' - '+byYear[byYear.length-1].label):'')+'</div></div><div class="kpis">';
   kpi.forEach(function(k){h+='<div class="kpi"><div class="v">'+k[1]+'</div><div class="l">'+k[0]+'</div></div>';});
   h+="</div>";
   h+=section("A","GROSS WRITTEN PREMIUM INSIGHTS",[
@@ -134,21 +158,28 @@ function refresh(){
   return Promise.all([readSheet(dash,"INS_ByYear"),readSheet(dash,"INS_ByUMA"),
                       readSheet(dash,"INS_TopAccounts"),readSheet(dash,"INS_Claims")])
   .then(function(r){
-    var missing=["INS_ByYear","INS_ByUMA","INS_TopAccounts","INS_Claims"].filter(function(n,i){return !r[i];});
+    var names=["INS_ByYear","INS_ByUMA","INS_TopAccounts","INS_Claims"];
+    var missing=names.filter(function(n,i){return !r[i];});
     if(missing.length){document.getElementById("app").innerHTML=
       '<p class="err">Missing worksheet(s) on this dashboard: '+missing.join(", ")+
-      '</p><p class="muted">Add them to the dashboard (they can sit off-canvas) and refresh.</p>';return;}
-    var y=r[0],u=r[1],a=r[2],c=r[3];
-    var iy=col(y.cols,"year"),yg=col(y.cols,"gwp"),yi=col(y.cols,"incur"),yp=col(y.cols,"policy");
-    var byYear=y.rows.map(function(row){return {label:txt(row[iy]),gwp:num(row[yg]),inc:num(row[yi]),pol:yp>-1?num(row[yp]):0};})
-      .filter(function(r){return r.label;}).sort(function(m,n){return m.label<n.label?-1:1;});
-    var ub=col(u.cols,"business")>-1?col(u.cols,"business"):0,ug=col(u.cols,"gwp"),ui=col(u.cols,"incur");
-    var byBU=u.rows.map(function(row){return {name:txt(row[ub]),gwp:num(row[ug]),inc:num(row[ui])};}).filter(function(r){return r.name;});
-    var ac=col(a.cols,"company")>-1?col(a.cols,"company"):0,ag=col(a.cols,"gwp"),ai=col(a.cols,"incur");
-    var accounts=a.rows.map(function(row){return {name:txt(row[ac]),gwp:num(row[ag]),inc:ai>-1?num(row[ai]):0};})
-      .filter(function(r){return r.name;}).sort(function(m,n){return n.gwp-m.gwp;});
-    var cs=col(c.cols,"status")>-1?col(c.cols,"status"):0,cn=col(c.cols,"claimid")>-1?col(c.cols,"claimid"):1;
-    var claims=c.rows.map(function(row){return {name:txt(row[cs]),n:num(row[cn])};}).filter(function(r){return r.name;});
+      '</p><p class="muted">Add them to the dashboard (they may sit off-canvas) and refresh.</p>';return;}
+
+    var byYear=parse(r[0]).map(function(x){
+        return {label:x.label,gwp:pick(x.vals,"gwp"),inc:pick(x.vals,"incur"),pol:pick(x.vals,"policy")};})
+      .filter(function(y){return y.gwp!==0||y.inc!==0||y.pol!==0;})   // drops empty / pre-range years
+      .sort(function(a,b){return a.label<b.label?-1:1;});
+    var byBU=parse(r[1]).map(function(x){
+        return {name:x.label,gwp:pick(x.vals,"gwp"),inc:pick(x.vals,"incur")};})
+      .filter(function(b){return b.gwp!==0||b.inc!==0;});
+    var accounts=parse(r[2]).map(function(x){
+        return {name:x.label,gwp:pick(x.vals,"gwp"),inc:pick(x.vals,"incur")};})
+      .filter(function(a){return a.gwp!==0||a.inc!==0;}).sort(function(m,n){return n.gwp-m.gwp;});
+    var claims=parse(r[3]).map(function(x){
+        return {name:x.label,n:pick(x.vals,"claim")||pick(x.vals,"cntd")};})
+      .filter(function(c){return c.n!==0;});
+
+    if(!byYear.length){document.getElementById("app").innerHTML=
+      '<p class="err">INS_ByYear returned no usable rows.</p><p class="muted">Check the sheet has a year dimension and the GWP / incurred measures, and that the broker filter is applied to it.</p>';return;}
     document.getElementById("app").innerHTML=build(byYear,byBU,accounts,claims);
   }).catch(function(e){document.getElementById("app").innerHTML='<p class="err">Error: '+esc(e.message||e)+'</p>';});}
 
